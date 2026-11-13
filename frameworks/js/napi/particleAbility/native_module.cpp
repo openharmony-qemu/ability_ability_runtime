@@ -26,6 +26,25 @@
 namespace OHOS {
 namespace AppExecFwk {
 EXTERN_C_START
+static napi_status RegisterParticleErrorCode(napi_env env, napi_value exports)
+{
+    napi_value errorCode = nullptr;
+    napi_status status = napi_create_object(env, &errorCode);
+    if (status != napi_ok) {
+        return status;
+    }
+    napi_value invalidParameter = nullptr;
+    status = napi_create_int32(env, -1, &invalidParameter);
+    if (status != napi_ok) {
+        return status;
+    }
+    status = napi_set_named_property(env, errorCode, "INVALID_PARAMETER", invalidParameter);
+    if (status != napi_ok) {
+        return status;
+    }
+    return napi_set_named_property(env, exports, "ErrorCode", errorCode);
+}
+
 /*
  * The module initialization.
  */
@@ -34,6 +53,9 @@ static napi_value ParticleInit(napi_env env, napi_value exports)
     ParticleAbilityInit(env, exports);
     ContextPermissionInit(env, exports);
     DataAbilityHelperInit(env, exports);
+    if (RegisterParticleErrorCode(env, exports) != napi_ok) {
+        return nullptr;
+    }
     return exports;
 }
 EXTERN_C_END

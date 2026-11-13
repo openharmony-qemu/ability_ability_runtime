@@ -16,7 +16,9 @@
 #include "js_service_extension_context.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 
 #include "ability_business_error.h"
 #include "ability_manager_client.h"
@@ -147,6 +149,11 @@ public:
     static napi_value TerminateAbility(napi_env env, napi_callback_info info)
     {
         GET_NAPI_INFO_AND_CALL(env, info, JsServiceExtensionContext, OnTerminateAbility);
+    }
+
+    static napi_value TerminateAbilityIfStartId(napi_env env, napi_callback_info info)
+    {
+        GET_NAPI_INFO_AND_CALL(env, info, JsServiceExtensionContext, OnTerminateAbilityIfStartId);
     }
 
     static napi_value ConnectAbility(napi_env env, napi_callback_info info)
@@ -1035,6 +1042,50 @@ private:
         return result;
     }
 
+    napi_value OnTerminateAbilityIfStartId(napi_env env, NapiCallbackInfo& info)
+    {
+        double supplied = 0;
+        napi_valuetype suppliedType = napi_undefined;
+        if (info.argc != ARGC_ONE ||
+            napi_typeof(env, info.argv[INDEX_ZERO], &suppliedType) != napi_ok || suppliedType != napi_number ||
+            napi_get_value_double(env, info.argv[INDEX_ZERO], &supplied) != napi_ok ||
+            !std::isfinite(supplied) || supplied <= 0 ||
+            supplied > std::numeric_limits<int32_t>::max() || std::floor(supplied) != supplied) {
+            ThrowInvalidParamError(env, "expectedStartId must be one positive int32 from onRequest");
+            return CreateJsUndefined(env);
+        }
+        // Capture the delivered ID now, before any async execute or newer onRequest.
+        const int32_t expectedStartId = static_cast<int32_t>(supplied);
+        auto innerErrCode = std::make_shared<ErrCode>(ERR_OK);
+        auto stopped = std::make_shared<bool>(false);
+        NapiAsyncTask::ExecuteCallback execute = [weak = context_, expectedStartId, innerErrCode, stopped]() {
+            auto context = weak.lock();
+            if (!context) {
+                *innerErrCode = static_cast<int32_t>(AbilityErrorCode::ERROR_CODE_INVALID_CONTEXT);
+                return;
+            }
+            *innerErrCode = context->TerminateAbilityIfStartId(expectedStartId, *stopped);
+        };
+        NapiAsyncTask::CompleteCallback complete =
+            [innerErrCode, stopped](napi_env env, NapiAsyncTask& task, int32_t status) {
+                HandleScope handleScope(env);
+                if (status != napi_ok) {
+                    task.Reject(env, CreateJsError(env, static_cast<int32_t>(AbilityErrorCode::ERROR_CODE_INNER),
+                        "conditional termination async task did not complete"));
+                } else if (*innerErrCode == ERR_OK) {
+                    task.Resolve(env, CreateJsValue(env, *stopped));
+                } else if (*innerErrCode == static_cast<int32_t>(AbilityErrorCode::ERROR_CODE_INVALID_CONTEXT)) {
+                    task.Reject(env, CreateJsError(env, *innerErrCode, "context is released"));
+                } else {
+                    task.Reject(env, CreateJsErrorByNativeErr(env, *innerErrCode));
+                }
+            };
+        napi_value result = nullptr;
+        NapiAsyncTask::ScheduleHighQos("JSServiceExtensionContext::OnTerminateAbilityIfStartId",
+            env, CreateAsyncTaskWithLastParam(env, nullptr, std::move(execute), std::move(complete), &result));
+        return result;
+    }
+
     napi_value OnConnectAbility(napi_env env, NapiCallbackInfo& info)
     {
         HITRACE_METER_NAME(HITRACE_TAG_ABILITY_MANAGER, __PRETTY_FUNCTION__);
@@ -1704,6 +1755,8 @@ napi_value CreateJsServiceExtensionContext(napi_env env, std::shared_ptr<Service
     BindNativeFunction(env, object, "startAbilityAsCaller",
         moduleName, JsServiceExtensionContext::StartAbilityAsCaller);
     BindNativeFunction(env, object, "terminateSelf", moduleName, JsServiceExtensionContext::TerminateAbility);
+    BindNativeFunction(env, object, "terminateSelfIfStartId", moduleName,
+        JsServiceExtensionContext::TerminateAbilityIfStartId);
     BindNativeFunction(
         env, object, "connectServiceExtensionAbility", moduleName, JsServiceExtensionContext::ConnectAbility);
     BindNativeFunction(env, object, "disconnectAbility",

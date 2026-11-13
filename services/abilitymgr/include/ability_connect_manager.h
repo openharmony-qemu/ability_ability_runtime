@@ -86,6 +86,9 @@ public:
      */
     int TerminateAbility(const sptr<IRemoteObject> &token);
 
+    int32_t TerminateServiceExtensionAbilityIfStartId(const sptr<IRemoteObject> &token,
+        int32_t expectedStartId, bool &stopped);
+
     /**
      * StopServiceAbility with request.
      *

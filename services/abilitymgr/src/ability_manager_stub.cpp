@@ -55,6 +55,9 @@ int AbilityManagerStub::OnRemoteRequestInnerFirst(uint32_t code, MessageParcel &
     if (interfaceCode == AbilityManagerInterfaceCode::TERMINATE_ABILITY) {
         return TerminateAbilityInner(data, reply);
     }
+    if (interfaceCode == AbilityManagerInterfaceCode::TERMINATE_SERVICE_EXTENSION_IF_START_ID) {
+        return TerminateServiceExtensionAbilityIfStartIdInner(data, reply);
+    }
     if (interfaceCode == AbilityManagerInterfaceCode::MINIMIZE_ABILITY) {
         return MinimizeAbilityInner(data, reply);
     }
@@ -1257,6 +1260,21 @@ int AbilityManagerStub::TerminateAbilityInner(MessageParcel &data, MessageParcel
     reply.WriteInt32(result);
     if (resultWant != nullptr) {
         delete resultWant;
+    }
+    return NO_ERROR;
+}
+
+int AbilityManagerStub::TerminateServiceExtensionAbilityIfStartIdInner(MessageParcel &data, MessageParcel &reply)
+{
+    sptr<IRemoteObject> token = data.ReadRemoteObject();
+    int32_t expectedStartId = 0;
+    if (!token || !data.ReadInt32(expectedStartId) || expectedStartId <= 0 || data.GetReadableBytes() != 0) {
+        return IPC_STUB_ERR;
+    }
+    bool stopped = false;
+    int32_t result = TerminateServiceExtensionAbilityIfStartId(token, expectedStartId, stopped);
+    if (!reply.WriteInt32(result) || !reply.WriteBool(stopped)) {
+        return IPC_STUB_ERR;
     }
     return NO_ERROR;
 }

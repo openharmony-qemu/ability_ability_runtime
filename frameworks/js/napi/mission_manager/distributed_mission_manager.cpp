@@ -21,6 +21,7 @@
 #include "dms_sa_client.h"
 #include "hilog_tag_wrapper.h"
 #include "ipc_skeleton.h"
+#include "mission_info.h"
 #include "napi_common_data.h"
 #include "napi_common_util.h"
 #include "napi_common_want.h"
@@ -2220,9 +2221,41 @@ void NAPIMissionContinue::OnContinueDone(int32_t result)
     TAG_LOGI(AAFwkTag::MISSION, "end");
 }
 
+static napi_status RegisterContinueState(napi_env env, napi_value exports)
+{
+    struct Member {
+        const char *name;
+        int32_t value;
+    };
+    const Member members[] = {
+        {"ACTIVE", static_cast<int32_t>(ContinueState::CONTINUESTATE_ACTIVE)},
+        {"INACTIVE", static_cast<int32_t>(ContinueState::CONTINUESTATE_INACTIVE)},
+    };
+    napi_value object = nullptr;
+    napi_status status = napi_create_object(env, &object);
+    if (status != napi_ok) {
+        return status;
+    }
+    for (const auto &member : members) {
+        napi_value value = nullptr;
+        status = napi_create_int32(env, member.value, &value);
+        if (status != napi_ok) {
+            return status;
+        }
+        status = napi_set_named_property(env, object, member.name, value);
+        if (status != napi_ok) {
+            return status;
+        }
+    }
+    return napi_set_named_property(env, exports, "ContinueState", object);
+}
+
 napi_value DistributedMissionManagerExport(napi_env env, napi_value exports)
 {
     TAG_LOGI(AAFwkTag::MISSION, "called");
+    if (RegisterContinueState(env, exports) != napi_ok) {
+        return nullptr;
+    }
     napi_property_descriptor properties[] = {
         DECLARE_NAPI_FUNCTION("startSyncRemoteMissions", NAPI_StartSyncRemoteMissions),
         DECLARE_NAPI_FUNCTION("stopSyncRemoteMissions", NAPI_StopSyncRemoteMissions),

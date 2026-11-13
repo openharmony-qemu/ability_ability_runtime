@@ -49,6 +49,21 @@ static napi_value InitFailureCodeObject(napi_env env)
     return handleEscape.Escape(object);
 }
 
+static napi_value CompletionHandlerConstructor(napi_env env, napi_callback_info info)
+{
+    napi_value newTarget = nullptr;
+    NAPI_CALL(env, napi_get_new_target(env, info, &newTarget));
+    if (newTarget == nullptr) {
+        napi_throw_type_error(env, nullptr, "CompletionHandlerForAbilityStartCallback requires new");
+        return nullptr;
+    }
+    napi_value instance = nullptr;
+    NAPI_CALL(env, napi_get_cb_info(env, info, nullptr, nullptr, &instance, nullptr));
+    // Optional callbacks are ordinary per-instance JS properties. No native
+    // ownership or service identity is attached to this public data object.
+    return instance;
+}
+
 static napi_value CompletionHandlerForAbilityStartCallbackInit(napi_env env, napi_value exports)
 {
     AbilityRuntime::HandleEscape handleEscape(env);
@@ -58,8 +73,12 @@ static napi_value CompletionHandlerForAbilityStartCallbackInit(napi_env env, nap
         return nullptr;
     }
 
+    napi_value constructor = nullptr;
+    NAPI_CALL(env, napi_define_class(env, "CompletionHandlerForAbilityStartCallback", NAPI_AUTO_LENGTH,
+        CompletionHandlerConstructor, nullptr, 0, nullptr, &constructor));
     napi_property_descriptor exportObjs[] = {
         DECLARE_NAPI_PROPERTY("AbilityStartFailureCode", failureCode),
+        DECLARE_NAPI_PROPERTY("CompletionHandlerForAbilityStartCallback", constructor),
     };
 
     napi_status status = napi_define_properties(env, exports, sizeof(exportObjs) / sizeof(exportObjs[0]), exportObjs);

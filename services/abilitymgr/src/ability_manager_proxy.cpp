@@ -1252,6 +1252,34 @@ int AbilityManagerProxy::TerminateAbility(const sptr<IRemoteObject> &token,
     return reply.ReadInt32();
 }
 
+int32_t AbilityManagerProxy::TerminateServiceExtensionAbilityIfStartId(const sptr<IRemoteObject> &token,
+    int32_t expectedStartId, bool &stopped)
+{
+    stopped = false;
+    if (!token || expectedStartId <= 0) {
+        return ERR_INVALID_VALUE;
+    }
+    MessageParcel data;
+    MessageParcel reply;
+    MessageOption option;
+    if (!WriteInterfaceToken(data) || !data.WriteRemoteObject(token) || !data.WriteInt32(expectedStartId)) {
+        return INNER_ERR;
+    }
+    int32_t transport = SendRequest(AbilityManagerInterfaceCode::TERMINATE_SERVICE_EXTENSION_IF_START_ID,
+        data, reply, option);
+    if (transport != NO_ERROR) {
+        return transport;
+    }
+    int32_t result = INNER_ERR;
+    bool accepted = false;
+    if (!reply.ReadInt32(result) || !reply.ReadBool(accepted) || reply.GetReadableBytes() != 0 ||
+        (result != ERR_OK && accepted)) {
+        return INNER_ERR;
+    }
+    stopped = accepted;
+    return result;
+}
+
 int AbilityManagerProxy::BackToCallerAbilityWithResult(const sptr<IRemoteObject> &token, int resultCode,
     const Want *resultWant, int64_t callerRequestCode)
 {

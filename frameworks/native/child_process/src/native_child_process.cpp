@@ -14,6 +14,7 @@
  */
 
 #include "native_child_process.h"
+#include <cstring>
 #include <map>
 #include <mutex>
 #include <regex>
@@ -46,10 +47,6 @@ Ability_ChildProcessConfigs* OH_Ability_CreateChildProcessConfigs()
 
 Ability_NativeChildProcess_ErrCode OH_Ability_DestroyChildProcessConfigs(Ability_ChildProcessConfigs* configs)
 {
-    if(configs == nullptr){
-        TAG_LOGE(AAFwkTag::PROCESSMGR, "null Ability_ChildProcessConfigs");
-        return NCP_ERR_INVALID_PARAM;
-    }
     delete configs;
     configs = nullptr;
     return NCP_NO_ERROR;
@@ -60,6 +57,10 @@ Ability_NativeChildProcess_ErrCode OH_Ability_ChildProcessConfigs_SetIsolationMo
 {
     if(configs == nullptr) {
         TAG_LOGE(AAFwkTag::APPKIT, "null Ability_ChildProcessConfigs");
+        return NCP_ERR_INVALID_PARAM;
+    }
+    if (isolationMode != NCP_ISOLATION_MODE_NORMAL && isolationMode != NCP_ISOLATION_MODE_ISOLATED) {
+        TAG_LOGE(AAFwkTag::APPKIT, "invalid child process isolation mode");
         return NCP_ERR_INVALID_PARAM;
     }
     configs->isolationMode = isolationMode;
@@ -119,12 +120,14 @@ int OH_Ability_CreateNativeChildProcess(const char* libName, OH_Ability_OnNative
         return NCP_ERR_INTERNAL;
     }
 
+    // Keep the stub alive before dispatch: a synchronous notification may remove it.
+    ChildCallbackManager::GetInstance().AddRemoteObject(callbackStub);
     auto cpmErr = ChildProcessManager::GetInstance().CreateNativeChildProcessByAppSpawnFork(strLibName, callbackStub);
     if (cpmErr != ChildProcessManagerErrorCode::ERR_OK) {
+        ChildCallbackManager::GetInstance().RemoveRemoteObject(callbackStub);
         return ChildProcessManagerErrorUtil::CvtChildProcessManagerErrCode(cpmErr);
     }
 
-    ChildCallbackManager::GetInstance().AddRemoteObject(callbackStub);
     return NCP_NO_ERROR;
 }
 
@@ -149,13 +152,15 @@ Ability_NativeChildProcess_ErrCode OH_Ability_CreateNativeChildProcessWithConfig
     }
 
     auto isolationMode = configs->isolationMode == NCP_ISOLATION_MODE_ISOLATED;
+    // Keep the stub alive before dispatch: a synchronous notification may remove it.
+    ChildCallbackManager::GetInstance().AddRemoteObject(callbackStub);
     auto cpmErr = ChildProcessManager::GetInstance().CreateNativeChildProcessByAppSpawnFork(strLibName,
         callbackStub, configs->processName, isolationMode, configs->isIsolationUid);
     if (cpmErr != ChildProcessManagerErrorCode::ERR_OK) {
+        ChildCallbackManager::GetInstance().RemoveRemoteObject(callbackStub);
         return ChildProcessManagerErrorUtil::CvtChildProcessManagerErrCode(cpmErr);
     }
 
-    ChildCallbackManager::GetInstance().AddRemoteObject(callbackStub);
     return NCP_NO_ERROR;
 }
 
@@ -183,8 +188,12 @@ Ability_NativeChildProcess_ErrCode ConvertNativeChildProcessArgs(NativeChildProc
     }
     childArgs.fds = fds;
     if (args.entryParams != nullptr && *(args.entryParams) != '\0') {
-        std::string entryParams(args.entryParams);
-        childArgs.entryParams = entryParams;
+        auto size = strnlen(args.entryParams, AppExecFwk::CHILD_PROCESS_ARGS_PARAMS_MAX_SIZE + 1);
+        if (size > AppExecFwk::CHILD_PROCESS_ARGS_PARAMS_MAX_SIZE) {
+            TAG_LOGE(AAFwkTag::PROCESSMGR, "entry params exceed 150 KiB");
+            return NCP_ERR_INVALID_PARAM;
+        }
+        childArgs.entryParams.assign(args.entryParams, size);
     }
     return NCP_NO_ERROR;
 }

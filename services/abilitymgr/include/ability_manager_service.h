@@ -631,6 +631,9 @@ public:
     virtual int TerminateAbility(const sptr<IRemoteObject> &token, int resultCode = DEFAULT_INVAL_VALUE,
         const Want *resultWant = nullptr) override;
 
+    int32_t TerminateServiceExtensionAbilityIfStartId(const sptr<IRemoteObject> &token,
+        int32_t expectedStartId, bool &stopped) override;
+
     /**
      * TerminateUIServiceExtensionAbility, terminate the UIServiceExtensionAbility.
      *
@@ -981,6 +984,9 @@ public:
      */
     virtual int32_t CleanUIAbilityBySCB(const sptr<SessionInfo> &sessionInfo, bool isUserRequestedExit,
         uint32_t sceneFlag = 0) override;
+
+    // Internal owned-session cleanup, not an IPC/public application API.
+    void CloseLegacyPickerDialog(const std::string &id, const sptr<IRemoteObject> &token);
 
     std::shared_ptr<TaskHandlerWrap> GetTaskHandler() const
     {
@@ -3251,7 +3257,7 @@ private:
      * @return Returns whether the caller is allowed to start Ability.
      */
     int CheckCallAbilityPermission(const AbilityRequest &abilityRequest, bool isSelector, uint32_t specifyTokenId = 0,
-        bool isCallByShortcut = false, bool isFreeInstallFromService = false);
+        bool isCallByShortcut = false, bool isFreeInstallFromService = false, int32_t requestedUserId = -1);
 
     /**
      * Check if Caller is allowed to start Ability(Stage) by call.
@@ -3463,12 +3469,14 @@ private:
         const AppExecFwk::AbilityInfo& abilityInfo);
 
     int CheckAbilityCallPermission(const AbilityRequest& abilityRequest, const AppExecFwk::AbilityInfo& abilityInfo,
-        uint32_t specifyTokenId, bool isSelector, bool isFreeInstallFromService = false);
+        uint32_t specifyTokenId, bool isSelector, bool isFreeInstallFromService = false,
+        int32_t requestedUserId = -1);
 
     int CheckCallPermission(const Want& want, const AppExecFwk::AbilityInfo& abilityInfo,
         const AbilityRequest& abilityRequest, bool isForegroundToRestartApp,
         bool isSendDialogResult, uint32_t specifyTokenId,
-        const std::string& callerBundleName, bool isSelector, bool isFreeInstallFromService = false);
+        const std::string& callerBundleName, bool isSelector, bool isFreeInstallFromService = false,
+        int32_t requestedUserId = -1);
 
     void CheckExtensionRateLimit(const Want &want);
 
@@ -3676,7 +3684,7 @@ private:
 #ifdef SUPPORT_SCREEN
     bool isAnimationEnabled_ = true; //only use on mission list
     bool CheckWindowMode(int32_t windowMode, const std::vector<AppExecFwk::SupportWindowMode>& windowModes) const;
-    int32_t ShowPickerDialog(const Want& want, int32_t userId, const sptr<IRemoteObject> &token);
+    int32_t ShowPickerDialog(const Want& want, int32_t userId, const sptr<IRemoteObject> &token, int requestCode);
     void InitFocusListener();
     void RegisterFocusListener();
     std::shared_ptr<ImplicitStartProcessor> implicitStartProcessor_;

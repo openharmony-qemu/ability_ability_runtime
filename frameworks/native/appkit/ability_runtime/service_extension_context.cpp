@@ -228,6 +228,12 @@ ErrCode ServiceExtensionContext::DisconnectAbility(const AAFwk::Want &want,
     return ret;
 }
 
+ErrCode ServiceExtensionContext::TerminateAbilityIfStartId(int32_t expectedStartId, bool &stopped)
+{
+    return AAFwk::AbilityManagerClient::GetInstance()->TerminateServiceExtensionAbilityIfStartId(
+        token_, expectedStartId, stopped);
+}
+
 ErrCode ServiceExtensionContext::TerminateAbility()
 {
     TAG_LOGI(AAFwkTag::APPKIT, "begin");

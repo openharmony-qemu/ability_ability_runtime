@@ -28,11 +28,8 @@ namespace AbilityRuntime {
 
 class ChildProcessArgsManager {
 public:
-    static ChildProcessArgsManager &GetInstance()
-    {
-        static ChildProcessArgsManager instance;
-        return instance;
-    }
+    // One exported implementation owns the state shared by the loader and C API.
+    __attribute__((visibility("default"))) static ChildProcessArgsManager &GetInstance();
 
     virtual ~ChildProcessArgsManager() = default;
 

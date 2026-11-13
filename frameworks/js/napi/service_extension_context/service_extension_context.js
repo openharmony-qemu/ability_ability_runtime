@@ -119,6 +119,13 @@ class ServiceExtensionContext extends ExtensionContext {
     return this.__context_impl__.terminateSelf(callback);
   }
 
+  terminateSelfIfStartId(expectedStartId) {
+    if (arguments.length !== 1) {
+      throw new ParamError();
+    }
+    return this.__context_impl__.terminateSelfIfStartId(expectedStartId);
+  }
+
   requestModalUIExtension(want, callback) {
     return this.__context_impl__.requestModalUIExtension(want, callback);
   }

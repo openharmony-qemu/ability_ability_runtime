@@ -164,6 +164,9 @@ public:
      */
     ErrCode TerminateAbility();
 
+    // Stop this SERVICE extension only if no newer start has been accepted by AMS.
+    ErrCode TerminateAbilityIfStartId(int32_t expectedStartId, bool &stopped);
+
     ErrCode RequestModalUIExtension(const Want &want);
 
     ErrCode PreStartMission(const std::string& bundleName, const std::string& moduleName,

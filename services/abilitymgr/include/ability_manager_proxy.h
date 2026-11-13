@@ -448,6 +448,9 @@ public:
     virtual int TerminateAbility(
         const sptr<IRemoteObject> &token, int resultCode, const Want *resultWant = nullptr) override;
 
+    int32_t TerminateServiceExtensionAbilityIfStartId(const sptr<IRemoteObject> &token,
+        int32_t expectedStartId, bool &stopped) override;
+
     /**
      * BackToCallerAbilityWithResult, return to the caller ability.
      *

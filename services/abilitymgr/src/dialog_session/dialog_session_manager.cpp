@@ -15,7 +15,9 @@
 
 #include "dialog_session_manager.h"
 
+#include <algorithm>
 #include <random>
+#include <set>
 #include "ability_manager_service.h"
 #include "ability_util.h"
 #include "hitrace_meter.h"
@@ -42,6 +44,414 @@ constexpr const char* SUPPORT_CLOSE_ON_BLUR = "supportCloseOnBlur";
 constexpr const char* DIALOG_SESSION_ID = "dialogSessionId";
 constexpr const char* PICKER_ERMS_POLICY = "ability.params.picker.erms.policy";
 constexpr const char* ATOMIC_SERVICE_SHORT_LINK = "atomicServiceShortLink";
+}
+
+
+namespace {
+class LegacyPickerCallerDeathRecipient final : public IRemoteObject::DeathRecipient {
+public:
+    explicit LegacyPickerCallerDeathRecipient(const std::string &id) : id_(id) {}
+    void OnRemoteDied(const wptr<IRemoteObject> &) override
+    {
+        DialogSessionManager::GetInstance().CancelLegacyPickerSession(id_, false);
+    }
+private:
+    std::string id_;
+};
+}
+
+void DialogSessionManager::ReleaseLegacyPickerOwner(const std::shared_ptr<LegacyPickerOwner> &owner)
+{
+    if (owner == nullptr) {
+        return;
+    }
+    if (owner->timeout) {
+        owner->timeout.Cancel();
+    }
+    if (owner->callerScheduler != nullptr && owner->callerDeath != nullptr) {
+        owner->callerScheduler->RemoveDeathRecipient(owner->callerDeath);
+    }
+    if (owner->dialogToken != nullptr) {
+        auto abilityMgr = DelayedSingleton<AbilityManagerService>::GetInstance();
+        if (abilityMgr != nullptr) {
+            abilityMgr->CloseLegacyPickerDialog(owner->sessionId, owner->dialogToken);
+        }
+    }
+}
+
+bool DialogSessionManager::AttachLegacyPickerAbility(const std::shared_ptr<AbilityRecord> &record)
+{
+    if (record == nullptr || record->IsTerminating()) {
+        return false;
+    }
+    const auto id = record->GetWant().GetStringParam(DIALOG_SESSION_ID);
+    std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
+    auto found = legacyPickerOwners_.find(id);
+    auto caller = dialogCallerInfoMap_.find(id);
+    if (found == legacyPickerOwners_.end() || caller == dialogCallerInfoMap_.end() ||
+        !found->second->startAdmitted || !IsLegacyPickerOwner(*found->second, false) ||
+        record->GetApplicationInfo().uid != found->second->uid ||
+        record->GetApplicationInfo().accessTokenId != found->second->tokenId ||
+        (found->second->dialogToken != nullptr && found->second->dialogToken.GetRefPtr() != record->GetToken().GetRefPtr())) {
+        return false;
+    }
+    auto original = Token::GetAbilityRecordByToken(caller->second->callerToken);
+    if (original == nullptr || original->IsTerminating()) {
+        return false;
+    }
+    if (found->second->pid != -1 && found->second->pid != IPCSkeleton::GetCallingPid()) {
+        return false;
+    }
+    found->second->pid = IPCSkeleton::GetCallingPid();
+    found->second->dialogToken = record->GetToken();
+    return true;
+}
+
+bool DialogSessionManager::IsLegacyPickerId(const std::string &id)
+{
+    return id.compare(0, sizeof("legacy_picker_") - 1, "legacy_picker_") == 0;
+}
+
+bool DialogSessionManager::AdmitLegacyPickerStart(const std::string &id,
+    const AbilityRequest &origin, const AbilityRequest &target, int32_t requestedUserId)
+{
+    std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
+    auto found = legacyPickerOwners_.find(id);
+    auto context = dialogCallerInfoMap_.find(id);
+    if (found == legacyPickerOwners_.end() || context == dialogCallerInfoMap_.end() ||
+        dialogSessionInfoMap_.find(id) == dialogSessionInfoMap_.end()) {
+        return false;
+    }
+    auto owner = found->second;
+    auto caller = context->second;
+    auto record = Token::GetAbilityRecordByToken(origin.callerToken);
+    if (owner->startAdmitted || owner->committed || owner->busy || owner->pid != -1 ||
+        owner->dialogToken != nullptr || std::chrono::steady_clock::now() >= owner->expiresAt ||
+        record == nullptr || record->IsTerminating() || origin.callerToken == nullptr ||
+        caller->callerToken != origin.callerToken || caller->requestCode != origin.requestCode ||
+        caller->userId != origin.userId || owner->sourceUserId != origin.userId ||
+        record->GetOwnerMissionUserId() != origin.userId ||
+        caller->callerAccessTokenId != origin.callerAccessTokenId ||
+        record->GetApplicationInfo().accessTokenId != origin.callerAccessTokenId ||
+        target.callerToken != nullptr || target.requestCode != -1 ||
+        target.specifyTokenId != 0 || target.specifiedFullTokenId != 0 ||
+        requestedUserId < 0 || requestedUserId != origin.userId ||
+        target.want.GetStringParam(DIALOG_SESSION_ID) != id ||
+        !target.want.GetDeviceIdRef().empty() || !target.want.GetActionRef().empty() ||
+        target.abilityInfo.type != AppExecFwk::AbilityType::PAGE || target.abilityInfo.visible ||
+        !target.appInfo.isSystemApp || !target.appInfo.enabled ||
+        target.abilityInfo.bundleName != owner->bundleName ||
+        target.abilityInfo.moduleName != owner->moduleName || target.abilityInfo.name != owner->abilityName ||
+        target.appInfo.uid != owner->uid || target.appInfo.accessTokenId != owner->tokenId ||
+        target.abilityInfo.applicationInfo.uid != owner->uid ||
+        target.abilityInfo.applicationInfo.accessTokenId != owner->tokenId) {
+        return false;
+    }
+    // The private start permission is consumed once before any later callback.
+    owner->startAdmitted = true;
+    return true;
+}
+
+bool DialogSessionManager::IsLegacyPickerOwner(const LegacyPickerOwner &owner, bool attached) const
+{
+    return owner.uid == IPCSkeleton::GetCallingUid() && owner.tokenId != 0 &&
+        owner.tokenId == IPCSkeleton::GetCallingTokenID() && IPCSkeleton::GetCallingPid() > 0 &&
+        (!attached || owner.pid == IPCSkeleton::GetCallingPid()) &&
+        (owner.committed || std::chrono::steady_clock::now() < owner.expiresAt);
+}
+
+sptr<DialogSessionInfo> DialogSessionManager::GetLegacyPickerInfo(const std::string &id) const
+{
+    std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
+    auto owner = legacyPickerOwners_.find(id);
+    auto info = dialogSessionInfoMap_.find(id);
+    auto caller = dialogCallerInfoMap_.find(id);
+    if (owner == legacyPickerOwners_.end() || info == dialogSessionInfoMap_.end() ||
+        caller == dialogCallerInfoMap_.end() || !IsLegacyPickerOwner(*owner->second, true) ||
+        owner->second->dialogToken == nullptr) {
+        return nullptr;
+    }
+    auto record = Token::GetAbilityRecordByToken(caller->second->callerToken);
+    if (record == nullptr || record->IsTerminating() ||
+        (owner->second->pid != -1 && owner->second->pid != IPCSkeleton::GetCallingPid())) {
+        return nullptr;
+    }
+    auto dialog = Token::GetAbilityRecordByToken(owner->second->dialogToken);
+    if (dialog == nullptr || dialog->IsTerminating() || dialog->GetWant().GetStringParam(DIALOG_SESSION_ID) != id) {
+        return nullptr;
+    }
+    return info->second;
+}
+
+std::string DialogSessionManager::CreateLegacyPickerSession(AbilityRequest &request,
+    const AppExecFwk::AbilityInfo &dialogAbility, int &error)
+{
+    error = INNER_ERR;
+    auto caller = Token::GetAbilityRecordByToken(request.callerToken);
+    auto bms = AbilityUtil::GetBundleManagerHelper();
+    auto abilityMgr = DelayedSingleton<AbilityManagerService>::GetInstance();
+    auto handler = abilityMgr == nullptr ? nullptr : abilityMgr->GetTaskHandler();
+    if (caller == nullptr || caller->IsTerminating() || caller->GetOwnerMissionUserId() != request.userId) {
+        error = ERR_INVALID_CALLER;
+        return "";
+    }
+    if (bms == nullptr || handler == nullptr || dialogAbility.applicationInfo.accessTokenId == 0 ||
+        !dialogAbility.applicationInfo.isSystemApp || !dialogAbility.applicationInfo.enabled) {
+        return "";
+    }
+    std::vector<AppExecFwk::AbilityInfo> infos;
+    Want query = request.want;
+    query.SetParams(WantParams());
+    auto ret = IN_PROCESS_CALL(bms->QueryAbilityInfos(query, request.userId, infos));
+    if (ret != ERR_OK) {
+        error = ret;
+        return "";
+    }
+    auto info = sptr<DialogSessionInfo>::MakeSptr();
+    CHECK_POINTER_AND_RETURN(info, "");
+    GenerateCallerAbilityInfo(request, info->callerAbilityInfo);
+    std::set<std::string> seen;
+    for (const auto &target : infos) {
+        const auto key = target.bundleName + "/" + target.moduleName + "/" + target.name;
+        if (target.type != AppExecFwk::AbilityType::PAGE || !target.visible || !target.applicationInfo.enabled ||
+            target.bundleName.empty() || target.moduleName.empty() || target.name.empty() ||
+            target.applicationInfo.appIndex != 0 ||
+            (target.bundleName == dialogAbility.bundleName && target.name == dialogAbility.name) ||
+            !seen.emplace(key).second) {
+            continue;
+        }
+        DialogAbilityInfo item;
+        item.bundleName = target.bundleName;
+        item.moduleName = target.moduleName;
+        item.abilityName = target.name;
+        item.abilityIconId = target.iconId;
+        item.abilityLabelId = target.labelId;
+        item.bundleIconId = target.applicationInfo.iconId;
+        item.bundleLabelId = target.applicationInfo.labelId;
+        item.visible = target.visible;
+        item.appIndex = 0;
+        item.multiAppMode = target.applicationInfo.multiAppMode;
+        info->targetAbilityInfos.emplace_back(item);
+        if (info->targetAbilityInfos.size() > 512) {
+            error = ERR_WOULD_BLOCK;
+            return "";
+        }
+    }
+    auto callerInfo = std::make_shared<DialogCallerInfo>();
+    GenerateDialogCallerInfo(request, request.userId, callerInfo, SelectorType::IMPLICIT_START_SELECTOR, true);
+    auto owner = std::make_shared<LegacyPickerOwner>();
+    owner->bundleName = dialogAbility.bundleName;
+    owner->moduleName = dialogAbility.moduleName;
+    owner->abilityName = dialogAbility.name;
+    owner->sourceUserId = request.userId;
+    owner->uid = dialogAbility.applicationInfo.uid;
+    owner->tokenId = dialogAbility.applicationInfo.accessTokenId;
+    owner->expiresAt = std::chrono::steady_clock::now() + std::chrono::minutes(10);
+    auto scheduler = caller->GetScheduler();
+    if (scheduler == nullptr || scheduler->AsObject() == nullptr) {
+        error = ERR_INVALID_CALLER;
+        return "";
+    }
+    owner->callerScheduler = scheduler->AsObject();
+    std::random_device entropy;
+    std::string id;
+    {
+        std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
+        if (legacyPickerOwners_.size() >= 64) {
+            error = ERR_WOULD_BLOCK;
+            return "";
+        }
+        do {
+            id = "legacy_picker_" + std::to_string(entropy()) + "_" + std::to_string(entropy()) +
+                "_" + std::to_string(entropy()) + "_" + std::to_string(entropy());
+        } while (dialogSessionInfoMap_.find(id) != dialogSessionInfoMap_.end());
+        owner->sessionId = id;
+        owner->callerDeath = sptr<LegacyPickerCallerDeathRecipient>::MakeSptr(id);
+        if (owner->callerDeath == nullptr) {
+            return "";
+        }
+        legacyPickerOwners_.emplace(id, owner);
+        dialogSessionInfoMap_.emplace(id, info);
+        dialogCallerInfoMap_.emplace(id, callerInfo);
+        TAG_LOGI(AAFwkTag::DIALOG, "APPS579_PICKER_CREATE id:%{public}s caller_uid:%{public}d caller_token:%{public}u provider_uid:%{public}d request_code:%{public}d",
+            id.c_str(), caller->GetApplicationInfo().uid, caller->GetApplicationInfo().accessTokenId, owner->uid, request.requestCode);
+    }
+    if (!owner->callerScheduler->AddDeathRecipient(owner->callerDeath)) {
+        CancelLegacyPickerSession(id, false);
+        error = ERR_INVALID_CALLER;
+        return "";
+    }
+    auto timeout = handler->SubmitTask([id]() {
+        DialogSessionManager::GetInstance().CancelLegacyPickerSession(id, true);
+    }, 10 * 60 * 1000);
+    if (!timeout) {
+        CancelLegacyPickerSession(id, false);
+        // Death may have removed the map before AddDeathRecipient returned.
+        // Detach again after registration has definitely completed.
+        owner->callerScheduler->RemoveDeathRecipient(owner->callerDeath);
+        return "";
+    }
+    {
+        std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
+        auto current = legacyPickerOwners_.find(id);
+        if (current != legacyPickerOwners_.end() && !caller->IsTerminating()) {
+            current->second->timeout = timeout;
+            error = ERR_OK;
+            return id;
+        }
+    }
+    CancelLegacyPickerSession(id, false);
+    owner->callerScheduler->RemoveDeathRecipient(owner->callerDeath);
+    timeout.Cancel();
+    error = ERR_INVALID_CALLER;
+    return "";
+}
+
+void DialogSessionManager::CancelLegacyPickerSession(const std::string &id, bool notifyCaller)
+{
+    std::shared_ptr<DialogCallerInfo> caller;
+    std::shared_ptr<LegacyPickerOwner> released;
+    {
+        std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
+        auto owner = legacyPickerOwners_.find(id);
+        auto current = dialogCallerInfoMap_.find(id);
+        if (owner == legacyPickerOwners_.end() || current == dialogCallerInfoMap_.end()) {
+            return;
+        }
+        if (owner->second->committed) {
+            // Selection has committed. Never race a false cancellation against
+            // an already accepted native launch. A failed launch cleans below.
+            return;
+        }
+        caller = current->second;
+        released = owner->second;
+        legacyPickerOwners_.erase(owner);
+        dialogCallerInfoMap_.erase(current);
+        dialogSessionInfoMap_.erase(id);
+        TAG_LOGI(AAFwkTag::DIALOG, "APPS579_PICKER_RELEASE id:%{public}s notify:%{public}d owner_remaining:%{public}d caller_remaining:%{public}d info_remaining:%{public}d",
+            id.c_str(), static_cast<int>(notifyCaller), static_cast<int>(legacyPickerOwners_.count(id)),
+            static_cast<int>(dialogCallerInfoMap_.count(id)), static_cast<int>(dialogSessionInfoMap_.count(id)));
+    }
+    ReleaseLegacyPickerOwner(released);
+    auto record = Token::GetAbilityRecordByToken(caller->callerToken);
+    if (notifyCaller && caller->requestCode != -1 && record != nullptr && !record->IsTerminating()) {
+        Want result;
+        record->SendResultByBackToCaller(std::make_shared<AbilityResult>(caller->requestCode, -1, result));
+    }
+}
+
+void DialogSessionManager::OnLegacyPickerAbilityExit(const std::shared_ptr<AbilityRecord> &record)
+{
+    if (record == nullptr) {
+        return;
+    }
+    std::vector<std::pair<std::string, bool>> removed;
+    {
+        std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
+        for (const auto &item : legacyPickerOwners_) {
+            auto caller = dialogCallerInfoMap_.find(item.first);
+            if (caller == dialogCallerInfoMap_.end()) {
+                continue;
+            }
+            if (caller->second->callerToken.GetRefPtr() == record->GetToken().GetRefPtr()) {
+                removed.emplace_back(item.first, false);
+            } else if (item.second->dialogToken.GetRefPtr() == record->GetToken().GetRefPtr() ||
+                (item.second->dialogToken == nullptr &&
+                record->GetWant().GetStringParam(DIALOG_SESSION_ID) == item.first &&
+                record->GetApplicationInfo().uid == item.second->uid &&
+                record->GetApplicationInfo().accessTokenId == item.second->tokenId)) {
+                removed.emplace_back(item.first, true);
+            }
+        }
+    }
+    for (const auto &item : removed) {
+        CancelLegacyPickerSession(item.first, item.second);
+    }
+}
+
+int DialogSessionManager::SendLegacyPickerResult(const Want &want, const std::string &id, bool allowed)
+{
+    std::shared_ptr<DialogCallerInfo> caller;
+    std::shared_ptr<LegacyPickerOwner> owner;
+    {
+        std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
+        auto found = legacyPickerOwners_.find(id);
+        auto context = dialogCallerInfoMap_.find(id);
+        if (found == legacyPickerOwners_.end() || context == dialogCallerInfoMap_.end() ||
+            !IsLegacyPickerOwner(*found->second, true)) {
+            return ERR_INVALID_CALLER;
+        }
+        if (found->second->busy) {
+            return ERR_WOULD_BLOCK;
+        }
+        if (allowed) {
+            auto snapshot = dialogSessionInfoMap_.find(id);
+            if (snapshot == dialogSessionInfoMap_.end() ||
+                std::none_of(snapshot->second->targetAbilityInfos.begin(),
+                    snapshot->second->targetAbilityInfos.end(), [&want](const auto &target) {
+                        return target.bundleName == want.GetBundleNameRef() &&
+                            target.moduleName == want.GetModuleNameRef() &&
+                            target.abilityName == want.GetAbilityNameRef();
+                    })) {
+                return ERR_INVALID_VALUE;
+            }
+        }
+        caller = context->second;
+        owner = found->second;
+        owner->busy = true;
+    }
+    if (!allowed) {
+        CancelLegacyPickerSession(id, true);
+        return ERR_OK;
+    }
+    auto callerRecord = Token::GetAbilityRecordByToken(caller->callerToken);
+    auto bms = AbilityUtil::GetBundleManagerHelper();
+    std::vector<AppExecFwk::AbilityInfo> infos;
+    Want query = caller->targetWant;
+    query.SetParams(WantParams());
+    int ret = bms == nullptr ? INNER_ERR : IN_PROCESS_CALL(bms->QueryAbilityInfos(query, caller->userId, infos));
+    const auto element = want.GetElement();
+    auto match = std::find_if(infos.begin(), infos.end(), [&element](const auto &info) {
+        return info.type == AppExecFwk::AbilityType::PAGE && info.visible && info.applicationInfo.enabled &&
+            info.applicationInfo.appIndex == 0 && info.bundleName == element.GetBundleName() &&
+            info.moduleName == element.GetModuleName() && info.name == element.GetAbilityName();
+    });
+    if (callerRecord == nullptr || callerRecord->IsTerminating()) {
+        CancelLegacyPickerSession(id, false);
+        return ERR_INVALID_CALLER;
+    }
+    if (ret != ERR_OK || match == infos.end() || !want.GetDeviceIdRef().empty()) {
+        std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
+        owner->busy = false;
+        return ret == ERR_OK ? ERR_INVALID_VALUE : ret;
+    }
+    {
+        std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
+        auto current = legacyPickerOwners_.find(id);
+        if (current == legacyPickerOwners_.end() || current->second != owner ||
+            !IsLegacyPickerOwner(*owner, true)) {
+            return ERR_INVALID_CALLER;
+        }
+        // This is the linearization point for explicit user selection. Exit
+        // before this point cancels; after it, only a real launch result wins.
+        owner->committed = true;
+    }
+    owner->timeout.Cancel();
+    Want selected;
+    selected.SetElement(element);
+    ret = SendDialogResultCommon(selected, id, true);
+    if (ret != ERR_OK) {
+        {
+            std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
+            owner->committed = false;
+            owner->busy = false;
+        }
+        // A terminal native start error cannot leave a caller suspended with
+        // its deadline already cancelled. Return the real error and cancel the
+        // original outstanding result exactly once.
+        CancelLegacyPickerSession(id, true);
+    }
+    return ret;
 }
 
 DialogSessionManager &DialogSessionManager::GetInstance()
@@ -122,6 +532,9 @@ bool DialogSessionManager::NotifyQueryERMSFinished(const std::string &dialogSess
 
 sptr<DialogSessionInfo> DialogSessionManager::GetDialogSessionInfo(const std::string &dialogSessionId) const
 {
+    if (IsLegacyPickerId(dialogSessionId)) {
+        return GetLegacyPickerInfo(dialogSessionId);
+    }
     std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
     auto it = dialogSessionInfoMap_.find(dialogSessionId);
     if (it != dialogSessionInfoMap_.end()) {
@@ -134,6 +547,11 @@ sptr<DialogSessionInfo> DialogSessionManager::GetDialogSessionInfo(const std::st
 std::shared_ptr<DialogCallerInfo> DialogSessionManager::GetDialogCallerInfo(const std::string &dialogSessionId) const
 {
     std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
+    auto owner = legacyPickerOwners_.find(dialogSessionId);
+    if (IsLegacyPickerId(dialogSessionId) && (owner == legacyPickerOwners_.end() ||
+        !IsLegacyPickerOwner(*owner->second, true) || !owner->second->committed)) {
+        return nullptr;
+    }
     auto it = dialogCallerInfoMap_.find(dialogSessionId);
     if (it != dialogCallerInfoMap_.end()) {
         return it->second;
@@ -156,19 +574,37 @@ std::shared_ptr<StartupSessionInfo> DialogSessionManager::GetStartupSessionInfo(
 
 void DialogSessionManager::ClearDialogContext(const std::string &dialogSessionId)
 {
-    std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
-    dialogSessionInfoMap_.erase(dialogSessionId);
-    dialogCallerInfoMap_.erase(dialogSessionId);
-    startupSessionInfoMap_.erase(dialogSessionId);
-    return;
+    std::shared_ptr<LegacyPickerOwner> released;
+    {
+        std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
+        auto owner = legacyPickerOwners_.find(dialogSessionId);
+        if (owner != legacyPickerOwners_.end()) {
+            released = owner->second;
+            legacyPickerOwners_.erase(owner);
+        }
+        dialogSessionInfoMap_.erase(dialogSessionId);
+        dialogCallerInfoMap_.erase(dialogSessionId);
+        startupSessionInfoMap_.erase(dialogSessionId);
+    }
+    ReleaseLegacyPickerOwner(released);
 }
 
 void DialogSessionManager::ClearAllDialogContexts()
 {
-    std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
-    dialogSessionInfoMap_.clear();
-    dialogCallerInfoMap_.clear();
-    startupSessionInfoMap_.clear();
+    std::vector<std::shared_ptr<LegacyPickerOwner>> released;
+    {
+        std::lock_guard<ffrt::mutex> guard(dialogSessionRecordLock_);
+        for (const auto &item : legacyPickerOwners_) {
+            released.emplace_back(item.second);
+        }
+        legacyPickerOwners_.clear();
+        dialogSessionInfoMap_.clear();
+        dialogCallerInfoMap_.clear();
+        startupSessionInfoMap_.clear();
+    }
+    for (const auto &owner : released) {
+        ReleaseLegacyPickerOwner(owner);
+    }
 }
 
 void DialogSessionManager::GenerateCallerAbilityInfo(AbilityRequest &abilityRequest,
@@ -276,6 +712,14 @@ void DialogSessionManager::NotifyAbilityRequestFailure(const std::string &dialog
 }
 
 int DialogSessionManager::SendDialogResult(const Want &want, const std::string &dialogSessionId, bool isAllowed)
+{
+    if (IsLegacyPickerId(dialogSessionId)) {
+        return SendLegacyPickerResult(want, dialogSessionId, isAllowed);
+    }
+    return SendDialogResultCommon(want, dialogSessionId, isAllowed);
+}
+
+int DialogSessionManager::SendDialogResultCommon(const Want &want, const std::string &dialogSessionId, bool isAllowed)
 {
     if (NotifyQueryERMSFinished(dialogSessionId, isAllowed)) {
         TAG_LOGI(AAFwkTag::ABILITYMGR, "query ERMS finished");

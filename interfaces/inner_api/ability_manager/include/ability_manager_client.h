@@ -529,6 +529,9 @@ public:
      */
     ErrCode TerminateAbility(sptr<IRemoteObject> token, int resultCode, const Want *resultWant);
 
+    int32_t TerminateServiceExtensionAbilityIfStartId(const sptr<IRemoteObject> &token,
+        int32_t expectedStartId, bool &stopped);
+
     /**
      * StartSelf, start the ability itself with token.
      *

@@ -779,6 +779,9 @@ enum class AbilityManagerInterfaceCode {
 
     // unregister sa interceptor
     UNREGISTER_SA_INTERCEPTOR = 6178,
+
+    // Stop only the self SERVICE extension generation whose last dispatched startId matches.
+    TERMINATE_SERVICE_EXTENSION_IF_START_ID = 6179,
 };
 }  // namespace AAFwk
 }  // namespace OHOS

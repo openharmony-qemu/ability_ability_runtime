@@ -39,6 +39,9 @@ public:
     std::list<OH_Ability_OnNativeChildProcessExit> GetExitCallbacks();
 
 private:
+    OH_Ability_OnNativeChildProcessStarted TakeStartCallback();
+
+    std::mutex startCallbackMutex_;
     OH_Ability_OnNativeChildProcessStarted callback_ = nullptr;
     std::mutex exitCallbackListMutex_;
     std::list<OH_Ability_OnNativeChildProcessExit> exitCallbacks_;

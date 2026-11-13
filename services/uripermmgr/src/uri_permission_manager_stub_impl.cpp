@@ -1727,11 +1727,20 @@ int32_t UriPermissionManagerStubImpl::RevokeFileUriPermission(uint32_t tokenId, 
         tokenId, timeNow);
     auto ret = SandboxManagerKit::UnSetAllPolicyByToken(tokenId, timeNow);
     if (ret != ERR_OK) {
-        TAG_LOGE(AAFwkTag::URIPERMMGR, "UnsetAllPolicyByToken failed, ret: %{public}d", ret);
+        TAG_LOGE(AAFwkTag::URIPERMMGR, "URI579_REVOKE token:%{public}u sandbox:1 unset_result:%{public}d "
+            "erased:0 policy_cutoff_ns:%{public}" PRIu64, tokenId, ret, timeNow);
         return WrapErrorCode(ret, funcResult);
     }
 #endif // ABILITY_RUNTIME_FEATURE_SANDBOXMANAGER
-    permissionTokenMap_.erase(tokenId);
+    const auto erased = permissionTokenMap_.erase(tokenId);
+#ifdef ABILITY_RUNTIME_FEATURE_SANDBOXMANAGER
+    TAG_LOGI(AAFwkTag::URIPERMMGR, "URI579_REVOKE token:%{public}u sandbox:1 unset_result:%{public}d "
+        "erased:%{public}zu remaining:%{public}zu policy_cutoff_ns:%{public}" PRIu64,
+        tokenId, ret, erased, permissionTokenMap_.count(tokenId), timeNow);
+#else
+    TAG_LOGI(AAFwkTag::URIPERMMGR, "URI579_REVOKE token:%{public}u sandbox:0 unset_result:unavailable "
+        "erased:%{public}zu remaining:%{public}zu", tokenId, erased, permissionTokenMap_.count(tokenId));
+#endif
     return ERR_OK;
 }
 

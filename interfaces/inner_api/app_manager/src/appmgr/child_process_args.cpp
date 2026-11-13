@@ -24,7 +24,7 @@ namespace OHOS {
 namespace AppExecFwk {
 bool ChildProcessArgs::ReadFromParcel(Parcel &parcel)
 {
-    entryParams = Str16ToStr8(parcel.ReadString16());
+    entryParams = parcel.ReadString();
 
     int32_t fdsSize = parcel.ReadInt32();
     if (fdsSize > CHILD_PROCESS_ARGS_FDS_MAX_COUNT) {
@@ -60,7 +60,11 @@ ChildProcessArgs *ChildProcessArgs::Unmarshalling(Parcel &parcel)
 
 bool ChildProcessArgs::Marshalling(Parcel &parcel) const
 {
-    WRITE_PARCEL_AND_RETURN_FALSE_IF_FAIL(String16, parcel, Str8ToStr16(entryParams));
+    if (entryParams.size() > CHILD_PROCESS_ARGS_PARAMS_MAX_SIZE || !PrepareChildProcessArgsParcel(parcel)) {
+        TAG_LOGE(AAFwkTag::APPMGR, "child args exceed parameter or parcel capacity");
+        return false;
+    }
+    WRITE_PARCEL_AND_RETURN_FALSE_IF_FAIL(String, parcel, entryParams);
     WRITE_PARCEL_AND_RETURN_FALSE_IF_FAIL(Int32, parcel, fds.size());
     auto messageParcel = static_cast<MessageParcel*>(&parcel);
     if (messageParcel == nullptr) {

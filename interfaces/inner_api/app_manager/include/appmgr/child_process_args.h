@@ -25,6 +25,18 @@ namespace OHOS {
 namespace AppExecFwk {
 constexpr int32_t CHILD_PROCESS_ARGS_FDS_MAX_COUNT = 16;
 constexpr int32_t CHILD_PROCESS_ARGS_FD_KEY_MAX_LENGTH = 20;
+constexpr size_t CHILD_PROCESS_ARGS_PARAMS_MAX_SIZE = 150 * 1024;
+// ASCII expands to twice its UTF-8 size in the existing UTF-16 wire format.
+// Leave room for the enclosing request/reply, options, names and descriptors.
+constexpr size_t CHILD_PROCESS_ARGS_PARCEL_CAPACITY = 512 * 1024;
+
+inline bool PrepareChildProcessArgsParcel(Parcel &parcel)
+{
+    // SetMaxCapacity returns false when the capacity is already sufficient.
+    return parcel.GetMaxCapacity() >= CHILD_PROCESS_ARGS_PARCEL_CAPACITY ||
+        parcel.SetMaxCapacity(CHILD_PROCESS_ARGS_PARCEL_CAPACITY);
+}
+
 struct ChildProcessArgs : public Parcelable {
     std::string entryParams;
     std::map<std::string, int32_t> fds;

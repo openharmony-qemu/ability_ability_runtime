@@ -23,6 +23,7 @@
 
 #include "aa_tools/ability_start_with_wait_observer_interface.h"
 #include "ability_connect_callback_interface.h"
+#include "ability_manager_errors.h"
 #include "ability_manager_ipc_interface_code.h"
 #include "ability_running_info.h"
 #include "ability_scheduler_interface.h"
@@ -2902,6 +2903,13 @@ public:
         int32_t resultCode, const AppExecFwk::SkillExecuteResult &result)
     {
         return ERR_OK;
+    }
+    // Appended to preserve existing virtual-method positions. Legacy implementations fail closed.
+    virtual int32_t TerminateServiceExtensionAbilityIfStartId(const sptr<IRemoteObject> &token,
+        int32_t expectedStartId, bool &stopped)
+    {
+        stopped = false;
+        return ERR_CAPABILITY_NOT_SUPPORT;
     }
 };
 }  // namespace AAFwk

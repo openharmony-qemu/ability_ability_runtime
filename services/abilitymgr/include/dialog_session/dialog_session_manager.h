@@ -15,7 +15,9 @@
 
 #ifndef OHOS_ABILITY_RUNTIME_DIALOG_SESSION_MANAGEER_H
 #define OHOS_ABILITY_RUNTIME_DIALOG_SESSION_MANAGEER_H
+#include <chrono>
 #include <list>
+#include "task_handler_wrap.h"
 #include <unordered_map>
 #include <string>
 #include "ability_record.h"
@@ -141,12 +143,48 @@ public:
     bool UpdateExtensionWantWithDialogCallerInfo(AbilityRequest &abilityRequest,
         const sptr<IRemoteObject> &callerToken, bool isSCBCall);
 
+    // Only AMS creates legacy select sessions; UI transports a session ID and
+    // an explicit component, never the original caller token or payload.
+    std::string CreateLegacyPickerSession(AbilityRequest &request,
+        const AppExecFwk::AbilityInfo &dialogAbility, int &error);
+    void CancelLegacyPickerSession(const std::string &id, bool notifyCaller);
+    void OnLegacyPickerAbilityExit(const std::shared_ptr<AbilityRecord> &record);
+    bool AttachLegacyPickerAbility(const std::shared_ptr<AbilityRecord> &record);
+    bool AdmitLegacyPickerStart(const std::string &id,
+        const AbilityRequest &origin, const AbilityRequest &target, int32_t requestedUserId);
+
     std::string GenerateDialogSessionId();
 
     void OnlySetDialogCallerInfo(AbilityRequest &abilityRequest, int32_t userId, SelectorType type,
         const std::string &dialogSessionId, bool needGrantUriPermission);
 private:
     DialogSessionManager() = default;
+
+    struct LegacyPickerOwner {
+        std::string sessionId;
+        std::string bundleName;
+        std::string moduleName;
+        std::string abilityName;
+        int32_t sourceUserId = -1;
+        bool startAdmitted = false;
+        int32_t uid = -1;
+        uint32_t tokenId = 0;
+        int32_t pid = -1;
+        bool busy = false;
+        bool committed = false;
+        std::chrono::steady_clock::time_point expiresAt;
+        TaskHandle timeout;
+        sptr<IRemoteObject> dialogToken;
+        sptr<IRemoteObject> callerScheduler;
+        sptr<IRemoteObject::DeathRecipient> callerDeath;
+    };
+    static void ReleaseLegacyPickerOwner(const std::shared_ptr<LegacyPickerOwner> &owner);
+    static bool IsLegacyPickerId(const std::string &id);
+    bool IsLegacyPickerOwner(const LegacyPickerOwner &owner, bool attached) const;
+    sptr<DialogSessionInfo> GetLegacyPickerInfo(const std::string &id) const;
+    int SendLegacyPickerResult(const Want &want, const std::string &id, bool allowed);
+    int SendDialogResultCommon(const Want &want, const std::string &id, bool allowed);
+    std::unordered_map<std::string, std::shared_ptr<LegacyPickerOwner>> legacyPickerOwners_;
 
     void SetDialogSessionInfo(const std::string &dialogSessionId, sptr<DialogSessionInfo> &dilogSessionInfo,
         std::shared_ptr<DialogCallerInfo> &dialogCallerInfo);

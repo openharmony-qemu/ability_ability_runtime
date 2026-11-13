@@ -26,45 +26,55 @@ NativeChildCallback::NativeChildCallback(OH_Ability_OnNativeChildProcessStarted 
 {
 }
 
+OH_Ability_OnNativeChildProcessStarted NativeChildCallback::TakeStartCallback()
+{
+    std::lock_guard<std::mutex> lock(startCallbackMutex_);
+    auto callback = callback_;
+    callback_ = nullptr;
+    return callback;
+}
+
 void NativeChildCallback::OnNativeChildStarted(const sptr<IRemoteObject> &nativeChild)
 {
-    if (callback_ == nullptr) {
+    // Removal and user callbacks may release the last external reference.
+    sptr<NativeChildCallback> keepAlive(this);
+    auto callback = TakeStartCallback();
+    if (callback == nullptr) {
         TAG_LOGE(AAFwkTag::PROCESSMGR, "null callback_");
         return;
     }
+    ChildCallbackManager::GetInstance().RemoveRemoteObject(this);
 
     if (!nativeChild) {
         TAG_LOGE(AAFwkTag::PROCESSMGR, "null nativeChild");
+        callback(NCP_ERR_INTERNAL, nullptr);
         return;
     }
-    
+
     TAG_LOGI(AAFwkTag::PROCESSMGR, "Native child process started");
     sptr<IRemoteObject> ipcRemote = nativeChild;
     OHIPCRemoteProxy *ipcProxy = CreateIPCRemoteProxy(ipcRemote);
     if (ipcProxy == nullptr) {
         TAG_LOGE(AAFwkTag::PROCESSMGR, "null ipcProxy");
-        callback_(NCP_ERR_INTERNAL, nullptr);
+        callback(NCP_ERR_INTERNAL, nullptr);
         return;
     }
 
-    callback_(static_cast<int32_t>(ChildProcessManagerErrorCode::ERR_OK), ipcProxy);
-    callback_ = nullptr;
-
-    ChildCallbackManager::GetInstance().RemoveRemoteObject(this);
+    callback(static_cast<int32_t>(ChildProcessManagerErrorCode::ERR_OK), ipcProxy);
 }
 
 void NativeChildCallback::OnError(int32_t errCode)
 {
-    if (callback_ == nullptr) {
+    sptr<NativeChildCallback> keepAlive(this);
+    auto callback = TakeStartCallback();
+    if (callback == nullptr) {
         TAG_LOGE(AAFwkTag::PROCESSMGR, "null callback_");
         return;
     }
+    ChildCallbackManager::GetInstance().RemoveRemoteObject(this);
 
     TAG_LOGI(AAFwkTag::PROCESSMGR, "Native child process start err %{public}d", errCode);
-    callback_(errCode, nullptr);
-    
-    callback_ = nullptr;
-    ChildCallbackManager::GetInstance().RemoveRemoteObject(this);
+    callback(errCode, nullptr);
 }
 
 int32_t NativeChildCallback::OnNativeChildExit(int32_t pid, int32_t signal)

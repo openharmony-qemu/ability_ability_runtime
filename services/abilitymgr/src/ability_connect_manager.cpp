@@ -118,6 +118,46 @@ int AbilityConnectManager::TerminateAbility(const sptr<IRemoteObject> &token)
     return TerminateAbilityInner(token);
 }
 
+int32_t AbilityConnectManager::TerminateServiceExtensionAbilityIfStartId(const sptr<IRemoteObject> &token,
+    int32_t expectedStartId, bool &stopped)
+{
+    stopped = false;
+    if (!token || expectedStartId <= 0) {
+        return ERR_INVALID_VALUE;
+    }
+    std::lock_guard guard(serialMutex_);
+    // Never use a cached/terminating record or a replacement's URI as this self token.
+    auto abilityRecord = GetExtensionByTokenFromServiceMap(token);
+    CHECK_POINTER_AND_RETURN(abilityRecord, ERR_CONNECT_MANAGER_NULL_ABILITY_RECORD);
+    const auto &info = abilityRecord->GetAbilityInfo();
+    if (info.type != AppExecFwk::AbilityType::EXTENSION ||
+        info.extensionAbilityType != AppExecFwk::ExtensionAbilityType::SERVICE) {
+        return ERR_WRONG_INTERFACE_CALL;
+    }
+    if (abilityRecord->GetStartId() != expectedStartId || abilityRecord->IsTerminating()) {
+        TAG_LOGI(AAFwkTag::EXT, "conditional stop stale, expected=%{public}d current=%{public}d record=%{public}d",
+            expectedStartId, abilityRecord->GetStartId(), abilityRecord->GetRecordId());
+        return ERR_OK;
+    }
+    {
+        // StartAbilityLocked takes serialMutex_ before this same queue lock. A request
+        // accepted while a command is pending has not yet received its new startId.
+        std::lock_guard pendingGuard(startServiceReqListLock_);
+        auto pending = startServiceReqList_.find(abilityRecord->GetURI());
+        if (pending != startServiceReqList_.end() && pending->second && !pending->second->empty()) {
+            TAG_LOGI(AAFwkTag::EXT, "conditional stop has pending start, expected=%{public}d record=%{public}d",
+                expectedStartId, abilityRecord->GetRecordId());
+            return ERR_OK;
+        }
+    }
+    TAG_LOGI(AAFwkTag::EXT, "conditional stop accepted, startId=%{public}d record=%{public}d",
+        expectedStartId, abilityRecord->GetRecordId());
+    MoveToTerminatingMap(abilityRecord);
+    int32_t result = TerminateAbilityLocked(token);
+    stopped = result == ERR_OK;
+    return result;
+}
+
 int AbilityConnectManager::TerminateAbilityInner(const sptr<IRemoteObject> &token)
 {
     auto abilityRecord = GetExtensionByTokenFromServiceMap(token);

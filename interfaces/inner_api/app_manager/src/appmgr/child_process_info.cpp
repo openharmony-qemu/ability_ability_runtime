@@ -15,6 +15,8 @@
 
 #include "child_process_info.h"
 
+#include "child_process_args.h"
+
 #include "hilog_tag_wrapper.h"
 #include "nlohmann/json.hpp"
 #include "parcel_macro.h"
@@ -50,7 +52,7 @@ bool ChildProcessInfo::ReadFromParcel(Parcel &parcel)
     processName = Str16ToStr8(parcel.ReadString16());
     srcEntry = Str16ToStr8(parcel.ReadString16());
     entryFunc = Str16ToStr8(parcel.ReadString16());
-    entryParams = Str16ToStr8(parcel.ReadString16());
+    entryParams = parcel.ReadString();
     jitEnabled = parcel.ReadBool();
     isDebugApp = parcel.ReadBool();
     isStartWithDebug = parcel.ReadBool();
@@ -89,6 +91,10 @@ ChildProcessInfo *ChildProcessInfo::Unmarshalling(Parcel &parcel)
 
 bool ChildProcessInfo::Marshalling(Parcel &parcel) const
 {
+    if (entryParams.size() > CHILD_PROCESS_ARGS_PARAMS_MAX_SIZE || !PrepareChildProcessArgsParcel(parcel)) {
+        TAG_LOGE(AAFwkTag::APPMGR, "child info exceeds parameter or parcel capacity");
+        return false;
+    }
     WRITE_PARCEL_AND_RETURN_FALSE_IF_FAIL(Int32, parcel, static_cast<int32_t>(pid));
     WRITE_PARCEL_AND_RETURN_FALSE_IF_FAIL(Int32, parcel, static_cast<int32_t>(hostPid));
     WRITE_PARCEL_AND_RETURN_FALSE_IF_FAIL(Int32, parcel, static_cast<int32_t>(uid));
@@ -99,7 +105,7 @@ bool ChildProcessInfo::Marshalling(Parcel &parcel) const
     WRITE_PARCEL_AND_RETURN_FALSE_IF_FAIL(String16, parcel, Str8ToStr16(processName));
     WRITE_PARCEL_AND_RETURN_FALSE_IF_FAIL(String16, parcel, Str8ToStr16(srcEntry));
     WRITE_PARCEL_AND_RETURN_FALSE_IF_FAIL(String16, parcel, Str8ToStr16(entryFunc));
-    WRITE_PARCEL_AND_RETURN_FALSE_IF_FAIL(String16, parcel, Str8ToStr16(entryParams));
+    WRITE_PARCEL_AND_RETURN_FALSE_IF_FAIL(String, parcel, entryParams);
     WRITE_PARCEL_AND_RETURN_FALSE_IF_FAIL(Bool, parcel, jitEnabled);
     WRITE_PARCEL_AND_RETURN_FALSE_IF_FAIL(Bool, parcel, isDebugApp);
     WRITE_PARCEL_AND_RETURN_FALSE_IF_FAIL(Bool, parcel, isStartWithDebug);

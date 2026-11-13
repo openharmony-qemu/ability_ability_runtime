@@ -496,6 +496,15 @@ ErrCode AbilityManagerClient::TerminateAbility(sptr<IRemoteObject> token, int re
     return abms->TerminateAbility(token, resultCode, resultWant);
 }
 
+int32_t AbilityManagerClient::TerminateServiceExtensionAbilityIfStartId(const sptr<IRemoteObject> &token,
+    int32_t expectedStartId, bool &stopped)
+{
+    stopped = false;
+    auto abms = GetAbilityManager();
+    CHECK_POINTER_RETURN_NOT_CONNECTED(abms);
+    return abms->TerminateServiceExtensionAbilityIfStartId(token, expectedStartId, stopped);
+}
+
 ErrCode AbilityManagerClient::StartSelf(sptr<IRemoteObject> token)
 {
     auto abms = GetAbilityManager();

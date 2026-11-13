@@ -514,6 +514,24 @@ napi_value JSCliManager::OnQueryTools(napi_env env, size_t argc, napi_value *arg
     return handleEscape.Escape(asyncResult);
 }
 
+static napi_value RegisterPublicSessionStatus(napi_env env, napi_value exports)
+{
+    const struct { const char *name; const char *value; } members[] = {
+        { "RUNNING", "running" },
+        { "COMPLETED", "completed" },
+        { "FAILED", "failed" },
+    };
+    napi_value object = nullptr;
+    NAPI_CALL(env, napi_create_object(env, &object));
+    for (const auto &member : members) {
+        napi_value value = nullptr;
+        NAPI_CALL(env, napi_create_string_utf8(env, member.value, NAPI_AUTO_LENGTH, &value));
+        NAPI_CALL(env, napi_set_named_property(env, object, member.name, value));
+    }
+    NAPI_CALL(env, napi_set_named_property(env, exports, "SessionStatus", object));
+    return exports;
+}
+
 napi_value JSCliManagerInit(napi_env env, napi_value exportObj)
 {
     TAG_LOGD(AAFwkTag::CLI_TOOL, "Init JSCliManager");
@@ -523,6 +541,7 @@ napi_value JSCliManagerInit(napi_env env, napi_value exportObj)
         return nullptr;
     }
 
+    NAPI_ASSERT(env, RegisterPublicSessionStatus(env, exportObj) != nullptr, "failed to create session status object");
     std::unique_ptr<JSCliManager> jsCliManager = std::make_unique<JSCliManager>();
     napi_wrap(env, exportObj, jsCliManager.release(), JSCliManager::Finalizer, nullptr, nullptr);
 
